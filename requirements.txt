@@ -1,0 +1,6 @@
+datasets
+Pillow
+numpy
+torch
+vllm
+
