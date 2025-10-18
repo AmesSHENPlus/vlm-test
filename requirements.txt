@@ -1,6 +1,8 @@
 datasets
-Pillow
 numpy
 torch
 vllm
-
+transformers==4.48.0
+av
+tqdm
+tensorboard

@@ -1,131 +1,148 @@
-import argparse
-import time
-import torch
-from torch.profiler import profile, record_function, ProfilerActivity
-from contextlib import nullcontext
-from PIL import Image
 import os
+import argparse
+import torch
+import time
+from tqdm import tqdm
 from vllm import LLM, SamplingParams
+from torch.profiler import profile, record_function, ProfilerActivity
+from utils import load_model, load_data, clip_input_video
 
-from dataset_loader import load_inst_it_dataset, load_video_frames, get_middle_frame_as_image
 
+def run_eval(model_type, llm, data_video, task, frame_num, evaluation_num, max_new_tokens, drop_rate, video_token_id, save_path=None, data_path=None, processor=None):
+    # Run evaluation
+    results = {}
+    results['ar_two_stage_decode'] = []
 
-def main(args):
-    # Initialize vLLM
-    llm = LLM(
-        model=args.model_path,
-        tensor_parallel_size=1,
+    # Create a sampling params object.
+    sampling_params = SamplingParams(
+        temperature=0.7,
+        top_p=0.8,
+        top_k=20,
+        repetition_penalty=1.05,
+        max_tokens=max_new_tokens,
     )
 
-    # Load data using the new dataset loader
-    dataset = load_inst_it_dataset()
+    for i in tqdm(range(evaluation_num)):
+        with record_function("data_iteration"):
+            data_instance = data_video[i]
 
-    total_inference_time = 0
-    total_preprocessing_time = 0
-    total_postprocessing_time = 0
-    num_samples = 0
-    correct_predictions = 0
-
-    profiler_context = profile(
-        activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-        record_shapes=True,
-        profile_memory=True,
-        with_stack=True,
-        on_trace_ready=torch.profiler.tensorboard_trace_handler('./log_dir_vllm')
-    ) if args.torch_profile else nullcontext()
-
-    with profiler_context as prof:
-        for i, sample in enumerate(dataset):
-            if i >= args.num_samples:
-                break
-
-            # The dataset is now pre-filtered, so we can directly use the full path
-            video_path = sample['full_video_path']
-            question_answer_pairs = sample['question_answer_pairs']
-
-            # --- Pre-processing (load video once) ---
-            start_preprocessing = time.time()
-            try:
-                frames = load_video_frames(video_path, num_frames=args.num_frames)
-                image = get_middle_frame_as_image(frames)
-            except Exception as e:
-                print(f"Error loading video {video_path}: {e}")
+            # Prepare model inputs
+            with record_function("clip_input_video"):
+                prompt, video_data = clip_input_video(processor, task, data_instance, frame_num=frame_num, model_type=model_type, data_path=data_path, use_vllm=True)
+            if prompt is None:
                 continue
-            end_preprocessing = time.time()
-            total_preprocessing_time += (end_preprocessing - start_preprocessing)
 
-            for qa_pair in question_answer_pairs:
-                with record_function(f"sample_{i}_qa") if args.torch_profile else nullcontext():
-                    question = qa_pair['question']
-                    ground_truth_answer = qa_pair.get('answer', '').lower()
+            torch.cuda.synchronize()
+            tic = time.time()
 
-                    # --- Model Inference with vLLM ---
-                    with record_function("model_inference_vllm") if args.torch_profile else nullcontext():
-                        start_inference = time.time()
+            # Generate text from the prompts.
+            with record_function("llm.generate"):
+                outputs = llm.generate(prompt, sampling_params, multi_modal_data=video_data)
 
-                        prompt = "USER: <image>\n" + question + "\nASSISTANT:"
+            torch.cuda.synchronize()
+            toc = time.time()
 
-                        sampling_params = SamplingParams(max_tokens=100)
+            decoding_time = toc - tic
 
-                        outputs = llm.generate({
-                            "prompt": prompt,
-                            "multi_modal_data": {"image": image},
-                        }, sampling_params=sampling_params)
-
-                        end_inference = time.time()
-                        total_inference_time += (end_inference - start_inference)
-
-                    # --- Post-processing ---
-                    with record_function("postprocessing") if args.torch_profile else nullcontext():
-                        start_postprocessing = time.time()
-                        generated_text = outputs[0].outputs[0].text.strip().lower()
-                        end_postprocessing = time.time()
-                        total_postprocessing_time += (end_postprocessing - start_postprocessing)
-
-                    # --- Accuracy Calculation ---
-                    if ground_truth_answer and ground_truth_answer in generated_text:
-                        correct_predictions += 1
-
-                    print(f"Question: {question}")
-                    print(f"Generated Answer: {generated_text}")
-                    if ground_truth_answer:
-                        print(f"Ground Truth: {ground_truth_answer}")
-                    print("-" * 20)
-
-                    num_samples += 1
-
-
-    # --- Print Benchmark Results ---
-    if num_samples > 0:
-        avg_preprocessing_time = total_preprocessing_time / num_samples
-        avg_inference_time = total_inference_time / num_samples
-        avg_postprocessing_time = total_postprocessing_time / num_samples
-        accuracy = (correct_predictions / num_samples) * 100 if 'answer' in dataset.column_names else -1
-
-        print("\n--- Benchmark Results (vLLM) ---")
-        print(f"Number of samples: {num_samples}")
-        print(f"Average Pre-processing time: {avg_preprocessing_time:.4f}s")
-        print(f"Average Model Inference time: {avg_inference_time:.4f}s")
-        print(f"Average Post-processing time: {avg_postprocessing_time:.4f}s")
-        print(f"Average Total time per sample: {(avg_preprocessing_time + avg_inference_time + avg_postprocessing_time):.4f}s")
-        if accuracy != -1:
-            print(f"Accuracy: {accuracy:.2f}%")
-
-    if args.torch_profile:
-        print("\n--- PyTorch Profiler Results ---")
-        print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
-        print("Trace file saved to ./log_dir_vllm")
+            print("\n")
+            print("-------Autoregressive Decoding with vLLM-------")
+            print("Decoding Time:", decoding_time)
+            output_text = outputs[0].outputs[0].text
+            print("Output:")
+            print(output_text)
+            print("\n")
+            results['ar_two_stage_decode'].append(decoding_time)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model-path", type=str, default="Qwen/Qwen2.5-VL-3B-Instruct")
-    parser.add_argument("--dataset-name", type=str, default="Inst-IT/Inst-It-Dataset")
-    parser.add_argument("--dataset-config-name", type=str, default="1_video_21k")
-    parser.add_argument("--dataset-local-path", type=str, default="/workspace/vlm-test/Inst-IT-Dataset")
-    parser.add_argument("--dataset-split", type=str, default="train")
-    parser.add_argument("--num-samples", type=int, default=25)
-    parser.add_argument("--num-frames", type=int, default=16)
-    parser.add_argument("--torch-profile", action="store_true", help="Enable PyTorch profiling.")
+    # Create command line argument parser
+    parser = argparse.ArgumentParser(description='Run video model evaluation')
+
+    # Model parameters
+    parser.add_argument('--model_type', type=str, default='qwen2_5_vl',
+                        choices=['llava_ov', 'qwen2_5_vl'],
+                        help='Model type: llava_ov or qwen2_5_vl')
+    parser.add_argument('--base_model_path', type=str,
+                        default=None,
+                        help='Path to the base model')
+
+    parser.add_argument('--data_path', type=str,
+                        default='/data',
+                        help='Path to the data directory')
+
+    # Evaluation parameters
+    parser.add_argument('--task', type=str, default='VideoDetailCaption',
+                        choices=['VideoDetailCaption', 'MVBench', 'MVLU', 'LongVideoBench', 'MMBench'],
+                        help='Evaluation task type')
+    parser.add_argument('--frame_num', type=int, default=8,
+                        help='Number of frames per video')
+    parser.add_argument('--evaluation_num', type=int, default=1,
+                        help='Number of evaluation samples')
+    parser.add_argument('--max_new_tokens', type=int, default=256,
+                        help='Maximum number of new tokens to generate')
+    parser.add_argument('--drop_rate', type=float, default=0.9,
+                        help='Pruning rate')
+    parser.add_argument('--data_num', type=int, default=100,
+                        help='Number of data samples to load')
+    parser.add_argument('--save_path', type=str, default=None,
+                        help='Path to save results. If not specified, a default path will be used')
+    parser.add_argument('--gpu_ids', type=str, default="0,1,2,3,4,5",
+                        help='GPU IDs to use')
+    parser.add_argument('--setting', type=str, default='standard',
+                        choices=['self', 'standard'],
+                        help='Speculative Decoding setting')
+
+
+    # Parse command line arguments
     args = parser.parse_args()
-    main(args)
+
+    # Set GPU environment variables
+    os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_ids
+
+    # Initialize the vLLM engine.
+    print("--- Initializing vLLM Engine ---")
+    llm = LLM(
+        model=args.base_model_path,
+        tensor_parallel_size=torch.cuda.device_count(),
+        enforce_eager=True, # Enforce eager execution for multi-modal models
+        trust_remote_code=True,
+    )
+    print("--- vLLM Engine Initialized ---")
+    # Load models
+    _, _, processor, video_token_id = load_model(args.model_type, args.base_model_path, None)
+
+
+    # Load data
+    data_video = load_data(args.task, args.data_num, args.data_path)
+
+    # Set save path
+    if args.save_path is None:
+        save_path = f"results/{args.model_type}_{args.task}_{args.drop_rate}"
+    else:
+        save_path = args.save_path
+
+    # Wrap the evaluation with the profiler
+    with profile(
+        activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+        record_shapes=True,
+        with_stack=True,
+        on_trace_ready=torch.profiler.tensorboard_trace_handler('./log_dir_vllm')
+    ) as prof:
+        run_eval(
+            args.model_type,
+            llm=llm,
+            data_video=data_video,
+            task=args.task,
+            frame_num=args.frame_num,
+            evaluation_num=args.evaluation_num,
+            max_new_tokens=args.max_new_tokens,
+            drop_rate=args.drop_rate,
+            video_token_id=video_token_id,
+            save_path=save_path,
+            data_path=args.data_path,
+            processor=processor,
+        )
+
+    print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
+    prof.export_chrome_trace("profile_trace.json")
+    print("Profiler trace saved to profile_trace.json")
