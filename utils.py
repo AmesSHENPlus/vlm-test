@@ -10,24 +10,6 @@ from qwen_vl_utils import process_vision_info
 
 # from visualize import *
 
-
-def load_model(base_model_path):
-    processor = AutoProcessor.from_pretrained(base_model_path, device_map="auto", torch_dtype=torch.float16)
-    model = AutoProcessor.from_pretrained(
-        base_model_path,
-        device_map="auto",
-        low_cpu_mem_usage=True,
-        torch_dtype=torch.float16,
-        attn_implementation = "sdpa",
-    )
-    video_token_id = 151656
-
-    # video_token_id = model.config.video_token_id
-    # print("video_token_id:",video_token_id)
-
-    return model, processor, video_token_id
-
-
 def load_data(task, data_num, data_path):
     if task == "VideoDetailCaption":
         data_video = load_dataset(
@@ -139,193 +121,48 @@ def get_last_video_idx(input_ids, video_token_id):
             break
     return last_video_idx
 
-def clip_input(processor, data_instance):
-    image = data_instance["image"]
-    conversation = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "Please provide a detailed description of the image, focusing on the main subjects, their actions, and the background scenes."},
-                {"type": "image"},
-            ],
-        },
-    ]
-    prompt = processor.apply_chat_template(conversation, add_generation_prompt=True)
+def clip_input_video(task, data_instance, frame_num=64, model_type='qwen2_5_vl',data_path=None):
+    if task == "VideoDetailCaption":
+        video_path = os.path.join(data_path, "Test_Videos/")
+        video_name = data_instance["video_name"]
+        video_path = video_path + video_name + ".mp4"
+        question = data_instance["question"]
 
-    inputs = processor(images=image, text=prompt, return_tensors="pt").to("cuda")
-    print("input id length:", inputs['input_ids'].shape[1])
-    return inputs
+    elif task == "MVBench":
+        video_path = data_path
+        video_name = data_instance["video"]
+        video_path = video_path + video_name
+        question = "Please provide a detailed description of the video, focusing on the main subjects, their actions, and the background scenes."
+
+    elif task == 'LongVideoBench':
+        video_path = data_path
+        video_name = data_instance["video_path"]
+        video_path = video_path + video_name
+        question = "Please provide a detailed description of the video, focusing on the main subjects, their actions, and the background scenes."
+
+    # elif task == "MVLU":
+    #     video_reader = data_instance['video']
+    #     total_frames = len(video_reader)
+    #     print("Total frames:", total_frames)
+
+    #     indices = np.linspace(0, total_frames - 1, frame_num, dtype=int)
+    #     frames = video_reader.get_batch(indices).asnumpy()
 
 
-def clip_input_video(processor, task, data_instance, frame_num=64, model_type='llava_ov',data_path=None):
-    if model_type == 'llava_ov':
-        if task == "VideoDetailCaption":
-            video_path = os.path.join(data_path, "Test_Videos/")
-            video_name = data_instance["video_name"]
-            video_path = video_path + video_name + ".mp4"
+    container = av.open(video_path)
+    total_frames = container.streams.video[0].frames
 
-            question = data_instance["question"]
-            conversation = [
-                {
+    if total_frames == 0:
+        return None, None
 
-                    "role": "user",
-                    "content": [
-                        {"type": "video"},
-                        {"type": "text", "text": question},
-                    ],
-                },
-            ]
-            container = av.open(video_path)
-            total_frames = container.streams.video[0].frames
-            # print("Total frames:",total_frames)
-            indices = np.arange(0, total_frames, total_frames / frame_num).astype(int)
-            video = read_video_pyav(container, indices)
+    indices = np.arange(0, total_frames, total_frames / frame_num).astype(int)
+    video = read_video_pyav(container, indices)
 
-        elif task == "MVBench":
-            video_path = data_path
-            video_name = data_instance["video"]
-            video_path = video_path + video_name
-
-            question = "Please provide a detailed description of the video, focusing on the main subjects, their actions, and the background scenes."
-            conversation = [
-                {
-
-                    "role": "user",
-                    "content": [
-                        {"type": "video"},
-                        {"type": "text", "text": question},
-                    ],
-                },
-            ]
-
-            container = av.open(video_path)
-            total_frames = container.streams.video[0].frames
-            # print("Total frames:",total_frames)
-            indices = np.arange(0, total_frames, total_frames / frame_num).astype(int)
-            video = read_video_pyav(container, indices)
-
-        elif task == 'LongVideoBench':
-            video_path = data_path
-            video_name = data_instance["video_path"]
-            video_path = video_path + video_name
-
-            question = "Please provide a detailed description of the video, focusing on the main subjects, their actions, and the background scenes."
-            conversation = [
-                {
-
-                    "role": "user",
-                    "content": [
-                        {"type": "video"},
-                        {"type": "text", "text": question},
-                    ],
-                },
-            ]
-
-            container = av.open(video_path)
-            total_frames = container.streams.video[0].frames
-            # print("Total frames:",total_frames)
-            if total_frames == 0:
-                return None
-            indices = np.arange(0, total_frames, total_frames / frame_num).astype(int)
-            video = read_video_pyav(container, indices)
-
-        elif task == "MVLU":
-            video_reader = data_instance['video']
-
-            total_frames = len(video_reader)
-            # print("Total frames:", total_frames)
-            indices = np.linspace(0, total_frames - 1, frame_num, dtype=int)
-            video = video_reader.get_batch(indices).asnumpy()
-
-            question = "Please provide a detailed description of the video, focusing on the main subjects, their actions, and the background scenes."
-            conversation = [
-                {
-
-                    "role": "user",
-                    "content": [
-                        {"type": "video"},
-                        {"type": "text", "text": question},
-                    ],
-                },
-            ]
-
-        # display_frame_grid(video)
-        # save_frames(video)
-        prompt = processor.apply_chat_template(conversation, add_generation_prompt=True)
-        inputs = processor(videos=list(video), text=prompt, return_tensors="pt").to("cuda")
-
-    elif model_type == 'qwen2_5_vl':
-        def calculate_fps_for_target_frames(container, target_frames):
-            video_stream = container.streams.video[0]
-            duration = container.duration / 1000000
-            if duration <= 0:
-                return 1.0
-
-            required_fps = target_frames / duration
-            print(f"INFO: Duration: {duration:.2f}s, frame_num: {target_frames}, fps: {required_fps:.2f}")
-            return required_fps
-
-        if task == "VideoDetailCaption":
-            video_path = os.path.join(data_path, "Test_Videos/")
-            video_name = data_instance["video_name"]
-            video_path = video_path + video_name + ".mp4"
-            question = data_instance["question"]
-
-        elif task == "MVBench":
-            video_path = data_path
-            video_name = data_instance["video"]
-            video_path = video_path + video_name
-            question = "Please provide a detailed description of the video, focusing on the main subjects, their actions, and the background scenes."
-
-        elif task == 'LongVideoBench':
-            video_path = data_path
-            video_name = data_instance["video_path"]
-            video_path = video_path + video_name
-            question = "Please provide a detailed description of the video, focusing on the main subjects, their actions, and the background scenes."
-
-        # elif task == "MVLU":
-        #     video_reader = data_instance['video']
-        #     total_frames = len(video_reader)
-        #     print("Total frames:", total_frames)
-
-        #     indices = np.linspace(0, total_frames - 1, frame_num, dtype=int)
-        #     frames = video_reader.get_batch(indices).asnumpy()
-
-        container = av.open(video_path)
-        total_frames = container.streams.video[0].frames
-        # print("Total frames:", total_frames)
-
-        if total_frames == 0:
-            return None
-
-        fps = calculate_fps_for_target_frames(container, frame_num)
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "video",
-                        "video": f"file://{video_path}",
-                        "max_pixels": 448*448,
-                        "fps": fps,
-                    },
-                    {"type": "text", "text": question},
-                ],
-            }
-        ]
-
-        text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        image_inputs, video_inputs, video_kwargs = process_vision_info(messages, return_video_kwargs=True)
-
-        inputs = processor(
-            text=[text],
-            images=image_inputs,
-            videos=video_inputs,
-            padding=True,
-            return_tensors="pt",
-            **video_kwargs,
-        )
-        inputs = inputs.to("cuda")
-
-    print("INFO: Input length:", inputs['input_ids'].shape[1])
-    return inputs
+    placeholder = "<|video_pad|>"
+    prompt = (
+        "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
+        f"<|im_start|>user\n<|vision_start|>{placeholder}<|vision_end|>"
+        f"{question}<|im_end|>\n"
+        "<|im_start|>assistant\n"
+    )
+    return prompt, video

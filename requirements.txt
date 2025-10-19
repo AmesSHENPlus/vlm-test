@@ -1,8 +1,9 @@
 datasets
 numpy
 torch
-vllm
-transformers==4.48.0
+vllm==0.10.1.1
+transformers
 av
 tqdm
 tensorboard
+qwen_vl_utils

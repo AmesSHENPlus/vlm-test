@@ -1,0 +1,21 @@
+# IDE directories
+.idea/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Virtual environment
+.venv/
+venv/
+
+# Log directories
+log*/
+log_dir_vllm/
+
+# Traces
+traces/
+
+# Results
+results/
+
