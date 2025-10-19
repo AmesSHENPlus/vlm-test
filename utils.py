@@ -6,37 +6,21 @@ from datasets import load_dataset, concatenate_datasets
 import av
 
 from transformers import AutoProcessor
-from models.modeling_llava_onevision_tree import LlavaOnevisionForConditionalGeneration
-
-from models.modeling_qwen2_5_vl import Qwen2_5_VLForConditionalGeneration
-from models.processing_qwen2_5_vl import Qwen2_5_VLProcessor
 from qwen_vl_utils import process_vision_info
 
 # from visualize import *
 
 
-def load_model(model_type, base_model_path):
-    if model_type == 'llava_ov':
-        processor = AutoProcessor.from_pretrained(base_model_path, device_map="auto", torch_dtype=torch.float16)
-        model = LlavaOnevisionForConditionalGeneration.from_pretrained(
-            base_model_path,
-            device_map="auto",
-            low_cpu_mem_usage=True,
-            torch_dtype=torch.float16,
-        )
-        video_token_id = 151647
-    elif model_type == 'qwen2_5_vl':
-        processor = Qwen2_5_VLProcessor.from_pretrained(base_model_path, device_map="auto", torch_dtype=torch.float16)
-        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            base_model_path,
-            device_map="auto",
-            low_cpu_mem_usage=True,
-            torch_dtype=torch.float16,
-            attn_implementation = "sdpa",
-        )
-        video_token_id = 151656
-    else:
-        print("Not supported model type.")
+def load_model(base_model_path):
+    processor = AutoProcessor.from_pretrained(base_model_path, device_map="auto", torch_dtype=torch.float16)
+    model = AutoProcessor.from_pretrained(
+        base_model_path,
+        device_map="auto",
+        low_cpu_mem_usage=True,
+        torch_dtype=torch.float16,
+        attn_implementation = "sdpa",
+    )
+    video_token_id = 151656
 
     # video_token_id = model.config.video_token_id
     # print("video_token_id:",video_token_id)
@@ -47,7 +31,7 @@ def load_model(model_type, base_model_path):
 def load_data(task, data_num, data_path):
     if task == "VideoDetailCaption":
         data_video = load_dataset(
-            "/data/ycji/datasets/VideoDetailCaption",
+            "/workspace/vlm-test/VideoDetailCaption",
             split="test",
             # cache_dir=cache_dir,
         ).shuffle(seed=42).select(range(data_num))

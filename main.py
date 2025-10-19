@@ -28,7 +28,7 @@ def run_eval(model_type, llm, data_video, task, frame_num, evaluation_num, max_n
 
             # Prepare model inputs
             with record_function("clip_input_video"):
-                prompt, video_data = clip_input_video(processor, task, data_instance, frame_num=frame_num, model_type=model_type, data_path=data_path, use_vllm=True)
+                prompt, video_data = clip_input_video(processor, task, data_instance, frame_num=frame_num, model_type=model_type, data_path=data_path)
             if prompt is None:
                 continue
 
@@ -109,7 +109,7 @@ if __name__ == "__main__":
     )
     print("--- vLLM Engine Initialized ---")
     # Load models
-    _, _, processor, video_token_id = load_model(args.model_type, args.base_model_path, None)
+    _, processor, video_token_id = load_model(args.base_model_path)
 
 
     # Load data
@@ -123,10 +123,10 @@ if __name__ == "__main__":
 
     # Wrap the evaluation with the profiler
     with profile(
-        activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-        record_shapes=True,
-        with_stack=True,
-        on_trace_ready=torch.profiler.tensorboard_trace_handler('./log_dir_vllm')
+            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+            record_shapes=True,
+            with_stack=True,
+            on_trace_ready=torch.profiler.tensorboard_trace_handler('./log_dir_vllm')
     ) as prof:
         run_eval(
             args.model_type,
