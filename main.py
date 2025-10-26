@@ -105,6 +105,13 @@ def run_decode(prefill_done, model_path, prompt, sampling_params, trace_dir):
     print("\n")
     print("-------Disaggregated Decoding with vLLM-------")
     print("Decoding Time:", decoding_time)
+
+    output = outputs[0]
+    input_token_length = len(output.prompt_token_ids)
+    output_token_length = len(output.outputs[0].token_ids)
+    print(f"Input token length: {input_token_length}")
+    print(f"Output token length: {output_token_length}")
+
     output_text = outputs[0].outputs[0].text
     print("Output:")
     print(output_text)
@@ -169,13 +176,20 @@ def run_eval(model_type, llm, data_video, task, frame_num, evaluation_num, max_n
 
                 decoding_time = toc - tic
 
-                print("\n")
-                print("-------Video QA with vLLM-------")
-                print("Eval Time:", decoding_time)
-                output_text = outputs[0].outputs[0].text
-                print("Output:")
-                print(output_text)
-                print("\n")
+                for i, output in enumerate(outputs):
+                    print(f"\n--- Result for Evaluation {i+1} ---")
+                    print("-------Video QA with vLLM-------")
+                    print(f"Eval Time for batch: {decoding_time}")
+
+                    input_token_length = len(output.prompt_token_ids)
+                    output_token_length = len(output.outputs[0].token_ids)
+                    print(f"Input token length: {input_token_length}")
+                    print(f"Output token length: {output_token_length}")
+
+                    output_text = output.outputs[0].text
+                    print("Output:")
+                    print(output_text)
+                    print("\n")
 
     print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
 
@@ -246,12 +260,24 @@ if __name__ == "__main__":
         print("--- Initializing vLLM Engine ---")
         llm = LLM(
             model=args.base_model_path,
-            tensor_parallel_size=torch.cuda.device_count(),
             enforce_eager=True, # Enforce eager execution for multi-modal models
             trust_remote_code=True,
             limit_mm_per_prompt={"video": 1},
         )
         print("--- vLLM Engine Initialized ---")
+    else:
+        print("--- Initializing vLLM Engine for PD Disagg ---")
+        llm = LLM(
+            model=args.base_model_path,
+            tensor_parallel_size=2,
+            gpu_memory_utilization=0.85,
+            enable_chunked_prefill=True,
+            kv_cache_dtype="fp16",
+            enforce_eager=True, # Enforce eager execution for multi-modal models
+            trust_remote_code=True,
+            limit_mm_per_prompt={"video": 1},
+        )
+        print("--- vLLM Engine Initialized for PD Disagg ---")
 
     # Load data
     data_video = load_data(args.task, args.data_num, args.data_path)
