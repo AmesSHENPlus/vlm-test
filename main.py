@@ -11,7 +11,7 @@ from torch.profiler import profile, record_function, ProfilerActivity
 from utils import load_data, clip_input_video
 
 
-def run_prefill(prefill_done, model_path, prompt, multi_modal_data, trace_dir):
+def run_prefill(prefill_done, decode_done, model_path, prompt, multi_modal_data, trace_dir):
     # We use GPU 0 for prefill node.
     os.environ["CUDA_VISIBLE_DEVICES"] = "0"
     sampling_params = SamplingParams(temperature=0, top_p=0.95, max_tokens=1)
@@ -51,20 +51,18 @@ def run_prefill(prefill_done, model_path, prompt, multi_modal_data, trace_dir):
         print(f"Prefill profiler trace saved to {trace_path}")
 
     prefill_done.set()
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        print("Script stopped by user.")
+    print("Prefill node is waiting for decode to finish...")
+    decode_done.wait()
+    print("Prefill node is exiting.")
 
 
-def run_decode(prefill_done, model_path, prompt, sampling_params, trace_dir):
+def run_decode(prefill_done, decode_done, model_path, prompt, sampling_params, trace_dir):
     # We use GPU 1 for decode node.
     os.environ["CUDA_VISIBLE_DEVICES"] = "1"
     ktc = KVTransferConfig(
         kv_connector="P2pNcclConnector",
         kv_role="kv_consumer",
-        kv_rank=1,
+        kv_rank=2,
         kv_parallel_size=2,
     )
     llm = LLM(
@@ -116,6 +114,7 @@ def run_decode(prefill_done, model_path, prompt, sampling_params, trace_dir):
     print("Output:")
     print(output_text)
     print("\n")
+    decode_done.set()
 
 
 def run_eval(model_type, llm, data_video, task, frame_num, evaluation_num, max_new_tokens, drop_rate, save_path=None, data_path=None, trace_dir=None, use_ncu=False, use_pd_disagg=False, base_model_path=None):
@@ -150,12 +149,13 @@ def run_eval(model_type, llm, data_video, task, frame_num, evaluation_num, max_n
 
                 if use_pd_disagg:
                     prefill_done = Event()
-                    prefill_process = Process(target=run_prefill, args=(prefill_done, base_model_path, inputs["prompt"], inputs["multi_modal_data"], trace_dir))
-                    decode_process = Process(target=run_decode, args=(prefill_done, base_model_path, inputs["prompt"], sampling_params, trace_dir))
+                    decode_done = Event()
+                    prefill_process = Process(target=run_prefill, args=(prefill_done, decode_done, base_model_path, inputs["prompt"], inputs["multi_modal_data"], trace_dir))
+                    decode_process = Process(target=run_decode, args=(prefill_done, decode_done, base_model_path, inputs["prompt"], sampling_params, trace_dir))
                     prefill_process.start()
                     decode_process.start()
                     decode_process.join()
-                    prefill_process.terminate()
+                    prefill_process.join()
                     continue
 
                 torch.cuda.synchronize()
@@ -265,19 +265,19 @@ if __name__ == "__main__":
             limit_mm_per_prompt={"video": 1},
         )
         print("--- vLLM Engine Initialized ---")
-    else:
-        print("--- Initializing vLLM Engine for PD Disagg ---")
-        llm = LLM(
-            model=args.base_model_path,
-            tensor_parallel_size=2,
-            gpu_memory_utilization=0.85,
-            enable_chunked_prefill=True,
-            kv_cache_dtype="fp16",
-            enforce_eager=True, # Enforce eager execution for multi-modal models
-            trust_remote_code=True,
-            limit_mm_per_prompt={"video": 1},
-        )
-        print("--- vLLM Engine Initialized for PD Disagg ---")
+    # else:
+    #     print("--- Initializing vLLM Engine for PD Disagg ---")
+    #     llm = LLM(
+    #         model=args.base_model_path,
+    #         tensor_parallel_size=2,
+    #         gpu_memory_utilization=0.85,
+    #         enable_chunked_prefill=True,
+    #         kv_cache_dtype="fp8",
+    #         enforce_eager=True, # Enforce eager execution for multi-modal models
+    #         trust_remote_code=True,
+    #         limit_mm_per_prompt={"video": 1},
+    #     )
+    #     print("--- vLLM Engine Initialized for PD Disagg ---")
 
     # Load data
     data_video = load_data(args.task, args.data_num, args.data_path)

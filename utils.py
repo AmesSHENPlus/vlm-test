@@ -13,7 +13,7 @@ from qwen_vl_utils import process_vision_info
 def load_data(task, data_num, data_path):
     if task == "VideoDetailCaption":
         data_video = load_dataset(
-            "/workspace/vlm-test/VideoDetailCaption",
+            "/workspace/VideoDetailCaption",
             split="test",
             # cache_dir=cache_dir,
         ).shuffle(seed=42).select(range(data_num))
